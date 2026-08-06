@@ -870,6 +870,12 @@
         <div class="hf"><label>MSP Representative <span style="color:#FFB84D">*</span></label><input id="h_tech" placeholder="Full name"></div>
         <div class="hf"><label>Implementation Contractor <span style="color:#FFB84D">*</span></label><input id="h_contractor" placeholder="Company name"></div>
         <div class="hf" style="grid-column:span 2"><label>Scope of Work <span style="color:#FFB84D">*</span></label><select id="h_scope" onchange="onScopeChange();scheduleAutoSave()"><option value="" selected>Select Scope</option><option value="Rectifier Cabinet's Replacement">Rectifier Cabinet's Replacement</option><option value="New Rectifier Cabinet Installation">New Rectifier Cabinet Installation</option></select></div>
+
+        <!-- PM 2026-08-05: Project Name. "Aramco Digital" removes item #7
+             (Rectifier Cabinet inside a non-approved telecom ODU) from the
+             checklist and renumbers everything after it. -->
+        <div class="hf"><label>Project Name</label><select id="h_project" onchange="onProjectChange();scheduleAutoSave()"><option value="" selected>Select Project</option><option value="CAPEX">CAPEX</option><option value="Colocation">Colocation</option><option value="B2S">B2S</option><option value="Mission Critical">Mission Critical</option><option value="Aramco Digital">Aramco Digital</option><option value="Other">Other</option></select></div>
+        <div class="hf" id="hf_project_other" style="display:none"><label>Project Name — please specify</label><input id="h_project_other" placeholder="Enter project name" oninput="scheduleAutoSave()"></div>
       </div>
     </div>
   </div>
@@ -1533,6 +1539,77 @@ const STOP_LABELS = [
   "Mixed Battery AH capacities connected",
 ];
 
+// ═══════════════════════════════════════════════════════════════════════
+// PM 2026-08-05: Project Name conditional checklist.
+//   Project "Aramco Digital" removes item #7 — "Rectifier Cabinet is not
+//   installed inside a telecom ODU not designed or approved for such
+//   installation" (STOP_CONDITIONS idx 6).
+//   Because Stop and Acceptance share one continuous numbering, dropping it
+//   renumbers everything after: the remaining stop items close up (old #8
+//   becomes #7 …) and the Acceptance block, numbered after the stop items,
+//   shifts down by one too.
+//   The arrays are never spliced — array indices stay stable, so STOP_SEV,
+//   STOP_LABELS and every hardcoded stop_X / accept_X reference stay valid.
+// ═══════════════════════════════════════════════════════════════════════
+var ARAMCO_EXCLUDED_STOP_IDX = 6;   // item #7 — non-approved telecom ODU
+
+function getProjectName() {
+  var el = document.getElementById('h_project');
+  return el ? el.value : '';
+}
+function isAramcoProject() { return getProjectName() === 'Aramco Digital'; }
+
+// Stop-condition array indices actually rendered, in display order.
+function getStopDisplayOrder() {
+  var order = [];
+  for (var i = 0; i < STOP_CONDITIONS.length; i++) {
+    if (isAramcoProject() && i === ARAMCO_EXCLUDED_STOP_IDX) continue;
+    order.push(i);
+  }
+  return order;
+}
+// Acceptance numbering continues after the *rendered* stop items.
+function getAcceptNumOffset() { return getStopDisplayOrder().length; }
+
+function onProjectChange() {
+  var other = document.getElementById('hf_project_other');
+  if (other) other.style.display = (getProjectName() === 'Other') ? '' : 'none';
+  refreshConditionalChecklist();
+}
+
+// Re-render both tables, preserving answers and comments across the rebuild.
+function refreshConditionalChecklist() {
+  var snap = {};
+  function grab(kind, len) {
+    for (var i = 0; i < len; i++) {
+      var rb = document.querySelector('input[name="' + kind + '_' + i + '"]:checked');
+      if (rb) snap[kind + '_' + i] = rb.value;
+      var nt = document.getElementById(kind + '_note_' + i);
+      if (nt && nt.value) snap[kind + '_note_' + i] = nt.value;
+    }
+  }
+  grab('stop', STOP_CONDITIONS.length);
+  grab('accept', ACCEPTANCE_ITEMS.length);
+
+  try { renderStopTable(); } catch (e) {}
+  try { renderAcceptTable(); } catch (e) {}
+
+  Object.keys(snap).forEach(function (k) {
+    if (k.indexOf('_note_') !== -1) {
+      var nt = document.getElementById(k);
+      if (nt) nt.value = snap[k];
+    } else {
+      var rr = document.getElementsByName(k);
+      for (var x = 0; x < rr.length; x++) {
+        if (rr[x].value === snap[k]) { rr[x].checked = true; break; }
+      }
+    }
+  });
+
+  try { if (typeof updateProgress === 'function') updateProgress(); } catch (e) {}
+  try { if (typeof computeOutcome === 'function') computeOutcome(); } catch (e) {}
+}
+
 // Installation Acceptance Items — PM 2026-05-05 wording rebrand to "Rectifier Cabinet".
 // Items #1 ("Installation per approved design") and #29 ("Handover Global checklist")
 // REMOVED per PM directive — array length is now 27. All hardcoded accept_X
@@ -1608,8 +1685,8 @@ const ACCEPT_LABELS = [
 // in place here so existing index references continue to work during the
 // staged rollout.
 const CONFIG_PARAMS = [
-  { section: "Input AC Voltage", param: "High Input AC Voltage",    threshold: "236–242 V", severity: "Minor", input: "text" },
-  { section: "",                  param: "Low Input AC Voltage",     threshold: "198–205 V",   severity: "Minor", input: "text" },
+  { section: "Input AC Voltage", param: "High Input AC Voltage",    threshold: "235–242 V", severity: "Minor", input: "text" },
+  { section: "",                  param: "Low Input AC Voltage",     threshold: "195–204 V",   severity: "Minor", input: "text" },
   { section: "",                  param: "High Frequency",  threshold: "103%–105% of 60",  severity: "Minor", input: "text" },
   { section: "",                  param: "Low Frequency",   threshold: "95%–97% of 60",    severity: "Minor", input: "text" },
   { section: "Output DC Voltage", param: "High Output DC Voltage",     threshold: "55 V (±0.5)",      severity: "Major", input: "text" },
@@ -1982,13 +2059,19 @@ function onNewCabinetCascade() {
 
 function renderStopTable() {
   var tbody = document.getElementById('stop-tbody');
-  STOP_CONDITIONS.forEach(function(cond, i) {
+  // PM 2026-08-05: this used to run once at init and only ever appended.
+  // Project Name now re-renders it, so clear first or rows duplicate.
+  tbody.innerHTML = '';
+  // Iterate the rendered subset; displayNum is the POSITION, not the array idx.
+  getStopDisplayOrder().forEach(function(i, pos) {
+    var cond = STOP_CONDITIONS[i];
+    var displayNum = pos + 1;
     var tr = document.createElement('tr');
     tr.id = 'stop_row_'+i;
     var sevClass = STOP_SEV[i]==='Major'?'sev-major':STOP_SEV[i]==='Minor'?'sev-minor':'sev-na';
     var sevLbl = STOP_SEV[i]||'NA';
     tr.innerHTML =
-      '<td class="num">'+(i+1)+'</td>'+
+      '<td class="num">'+displayNum+'</td>'+
       '<td><span data-en="'+cond.replace(/"/g,'&quot;')+'" data-type="stop" data-idx="'+i+'">'+cond+'</span><span class="sev-badge '+sevClass+'">'+sevLbl+'</span></td>'+
       '<td style="text-align:center"><label class="radio-btn ok-btn"><input type="radio" name="stop_'+i+'" value="ok" onchange="onStopChange(this,'+i+');updateProgress()"><span class="ok-label">OK</span></label></td>'+
       '<td style="text-align:center"><label class="radio-btn nok-btn"><input type="radio" name="stop_'+i+'" value="nok" onchange="onStopChange(this,'+i+');updateProgress()"><span class="nok-label">NOK</span></label></td>'+
@@ -2004,15 +2087,19 @@ function renderStopTable() {
   });
   // PM 2026-05-05 Phase 7: badge-stop element removed (Stop section dissolved). Null-safe.
   var stopBadge = document.getElementById('badge-stop');
-  if (stopBadge) stopBadge.textContent = STOP_CONDITIONS.length + ' items';
+  if (stopBadge) stopBadge.textContent = getStopDisplayOrder().length + ' items';
 }
 
 function renderAcceptTable() {
   var tbody = document.getElementById('accept-tbody');
+  // PM 2026-08-05: cleared for the same reason as the stop table — the
+  // acceptance numbering shifts when a stop item is removed, so this
+  // re-renders on Project Name change.
+  tbody.innerHTML = '';
   // PM 2026-05-05: Stop Conditions merged into the top of Acceptance.
   // Acceptance items are numbered after the stop items (e.g. 18..44 when
   // there are 17 stop items + 27 acceptance items).
-  var numOffset = STOP_CONDITIONS.length;
+  var numOffset = getAcceptNumOffset();   // PM 2026-08-05: rendered stop count, not array length
   ACCEPTANCE_ITEMS.forEach(function(item, i) {
     var tr = document.createElement('tr');
     tr.id = 'accept_row_'+i;
@@ -2034,7 +2121,7 @@ function renderAcceptTable() {
     tbody.appendChild(ctr);
   });
   // Badge shows TOTAL items (stop + accept) since they're now in one section.
-  document.getElementById('badge-accept').textContent = (STOP_CONDITIONS.length + ACCEPTANCE_ITEMS.length) + ' items';
+  document.getElementById('badge-accept').textContent = (getAcceptNumOffset() + ACCEPTANCE_ITEMS.length) + ' items';
 }
 
 function renderConfigTable() {
@@ -2217,11 +2304,12 @@ function validateConfigSetpoint(idx) {
 
   // === AC Voltage: fixed setpoint ranges (independent of L-L) ===
   // PM 2026-07-15: High/Low Input AC Voltage switched from %-of-L-L to fixed V ranges.
+  // PM 2026-08-06: ranges retuned — High 235–242, Low 195–204.
   if (p.param === 'High Input AC Voltage' && !isNaN(numVal)) {
-    isPass = numVal >= 236 && numVal <= 242;
+    isPass = numVal >= 235 && numVal <= 242;
   }
   else if (p.param === 'Low Input AC Voltage' && !isNaN(numVal)) {
-    isPass = numVal >= 198 && numVal <= 205;
+    isPass = numVal >= 195 && numVal <= 204;
   }
   // === AC Frequency: 103%–105% / 95%–97% of 60 ===
   else if (p.param === 'High Frequency' && !isNaN(numVal)) {
@@ -2513,8 +2601,9 @@ function syncNokToRemarks(noteId, itemNum, label) {
 // ══════════════════════════════════════════════════════════════════════
 function updateProgress() {
   var total = 0, filled = 0;
-  // Stop conditions
-  STOP_CONDITIONS.forEach(function(_, i) {
+  // Stop conditions — PM 2026-08-05: only those rendered for this Project.
+  // Counting a removed item would put 100% permanently out of reach.
+  getStopDisplayOrder().forEach(function(i) {
     total++;
     if (document.querySelector('input[name="stop_'+i+'"]:checked')) filled++;
   });
@@ -2556,7 +2645,7 @@ function computeOutcome() {
   var missingFields = checkRequiredFields();
 
   var majorNok = 0, minorNok = 0, totalAnswered = 0;
-  var TOTAL_REQUIRED = ACCEPTANCE_ITEMS.length + STOP_CONDITIONS.length;
+  var TOTAL_REQUIRED = ACCEPTANCE_ITEMS.length + getStopDisplayOrder().length;  // PM 2026-08-05
   for (var i = 0; i < ACCEPTANCE_ITEMS.length; i++) {
     var nok = document.querySelector('input[name="accept_'+i+'"][value="nok"]');
     var ok  = document.querySelector('input[name="accept_'+i+'"][value="ok"]');
@@ -2566,7 +2655,10 @@ function computeOutcome() {
       else minorNok++;
     }
   }
-  for (var j = 0; j < STOP_CONDITIONS.length; j++) {
+  // PM 2026-08-05: a removed item must not contribute an answer or a NOK.
+  var _stopOrder = getStopDisplayOrder();
+  for (var jj = 0; jj < _stopOrder.length; jj++) {
+    var j = _stopOrder[jj];
     var snok = document.querySelector('input[name="stop_'+j+'"][value="nok"]');
     var sok  = document.querySelector('input[name="stop_'+j+'"][value="ok"]');
     if ((snok && snok.checked) || (sok && sok.checked)) totalAnswered++;
@@ -2695,14 +2787,20 @@ function getPendingItems() {
   // Required fields
   groups.fields = checkRequiredFields();
   // Unanswered stop conditions
-  STOP_CONDITIONS.forEach(function(label, i){
+  // PM 2026-08-05: iterate the rendered subset, and report the number the
+  // technician actually sees (position, not array index).
+  getStopDisplayOrder().forEach(function(i, pos){
     var checked = document.querySelector('input[name="stop_'+i+'"]:checked');
-    if (!checked) groups.stops.push({num: i+1, label: STOP_LABELS[i] || ('Stop #'+(i+1))});
+    if (!checked) groups.stops.push({num: pos+1, label: STOP_LABELS[i] || ('Stop #'+(pos+1))});
   });
   // Unanswered acceptance items
+  // PM 2026-08-05: acceptance rows render as i+1+offset, but this list reported
+  // a bare i+1 — so "What's missing" cited numbers that appear nowhere on the
+  // form. Now matches the rendered numbering.
   ACCEPTANCE_ITEMS.forEach(function(label, i){
     var checked = document.querySelector('input[name="accept_'+i+'"]:checked');
-    if (!checked) groups.accepts.push({num: i+1, label: ACCEPT_LABELS[i] || ('Item #'+(i+1))});
+    var dnum = i + 1 + getAcceptNumOffset();
+    if (!checked) groups.accepts.push({num: dnum, label: ACCEPT_LABELS[i] || ('Item #'+dnum)});
   });
   // Unanswered config Pass/Fail
   CONFIG_PARAMS.forEach(function(p, i){
@@ -3076,7 +3174,7 @@ var _store = {
 
 function collectFormData() {
   var data = { ts: Date.now(), fields: {} };
-  ['h_siteid','h_sitename','h_wo','h_date','h_tech','h_contractor','h_region','h_district','h_scope','stop_sig','stop_date',
+  ['h_siteid','h_sitename','h_wo','h_date','h_tech','h_contractor','h_region','h_district','h_scope','h_project','h_project_other','stop_sig','stop_date',
    'site_power_config','site_ll_voltage','site_mdb_cb',
    'shelter_type','bb_fuses_count','bb_fuses_utilized','rect_loading_pct',
    'ac_v_l1n','ac_v_l2n','ac_v_l3n','ac_v_l1l2','ac_v_l2l3','ac_v_l3l1',
@@ -3188,6 +3286,10 @@ function loadProgress() {
     autoPopulateBatteryConfigFields();
     autoCheckTable2ToAccept();
     onScopeChange();
+    // PM 2026-08-05: rebuild the conditional item set for the restored Project
+    // Name. Runs after the saved answers are back in the DOM — the refresh
+    // snapshots and re-applies them across the re-render.
+    if (typeof onProjectChange === 'function') onProjectChange();
     onShelterTypeChange();
     validateBbFuses();
     validateBbFusesUtilized();
