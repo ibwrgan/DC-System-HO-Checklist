@@ -1707,8 +1707,8 @@ const ACCEPT_LABELS = [
 // in place here so existing index references continue to work during the
 // staged rollout.
 const CONFIG_PARAMS = [
-  { section: "Input AC Voltage", param: "High Input AC Voltage",    threshold: "235–242 V", severity: "Minor", input: "text" },
-  { section: "",                  param: "Low Input AC Voltage",     threshold: "195–204 V",   severity: "Minor", input: "text" },
+  { section: "Input AC Voltage", param: "High Input AC Voltage",    threshold: "236–242 V", severity: "Minor", input: "text" },
+  { section: "",                  param: "Low Input AC Voltage",     threshold: "198–205 V",   severity: "Minor", input: "text" },
   { section: "",                  param: "High Frequency",  threshold: "103%–105% of 60",  severity: "Minor", input: "text" },
   { section: "",                  param: "Low Frequency",   threshold: "95%–97% of 60",    severity: "Minor", input: "text" },
   { section: "Output DC Voltage", param: "High Output DC Voltage",     threshold: "55 V (±0.5)",      severity: "Major", input: "text" },
@@ -2331,10 +2331,10 @@ function validateConfigSetpoint(idx) {
   // PM 2026-07-15: High/Low Input AC Voltage switched from %-of-L-L to fixed V ranges.
   // PM 2026-08-06: ranges retuned — High 235–242, Low 195–204.
   if (p.param === 'High Input AC Voltage' && !isNaN(numVal)) {
-    isPass = numVal >= 235 && numVal <= 242;
+    isPass = numVal >= 236 && numVal <= 242;
   }
   else if (p.param === 'Low Input AC Voltage' && !isNaN(numVal)) {
-    isPass = numVal >= 195 && numVal <= 204;
+    isPass = numVal >= 198 && numVal <= 205;
   }
   // === AC Frequency: 103%–105% / 95%–97% of 60 ===
   else if (p.param === 'High Frequency' && !isNaN(numVal)) {
