@@ -1571,6 +1571,28 @@ function getStopDisplayOrder() {
 // Acceptance numbering continues after the *rendered* stop items.
 function getAcceptNumOffset() { return getStopDisplayOrder().length; }
 
+// Display number a technician actually sees for stop idx i ('' if not rendered).
+function getStopDisplayNum(i) {
+  var pos = getStopDisplayOrder().indexOf(i);
+  return pos === -1 ? '' : String(pos + 1);
+}
+
+// PM 2026-08-05: on "Aramco Digital", base item #8 — "Enough space is available
+// to install the Rectifier Cabinet with sufficient ventilation clearances"
+// (STOP_CONDITIONS idx 7) — drops from Major to Information-Only. It is still
+// asked and still answered, but a NOK on it no longer counts as a
+// non-conformance, so it cannot make the handover conditional or rejected.
+// NOTE: with item #7 removed on this project, this row renders as #7.
+var ARAMCO_INFO_STOP_IDX = 7;   // base item #8 — space / ventilation clearances
+
+function getStopSev(i) {
+  if (isAramcoProject() && i === ARAMCO_INFO_STOP_IDX) return 'Info';
+  return STOP_SEV[i];
+}
+// Severities that carry no weight in the acceptance decision. 'NA' is the
+// pre-existing case (stop idx 2); 'Info' is the Aramco downgrade above.
+function isAdvisorySev(sev) { return sev === 'NA' || sev === 'Info'; }
+
 function onProjectChange() {
   var other = document.getElementById('hf_project_other');
   if (other) other.style.display = (getProjectName() === 'Other') ? '' : 'none';
@@ -2068,8 +2090,11 @@ function renderStopTable() {
     var displayNum = pos + 1;
     var tr = document.createElement('tr');
     tr.id = 'stop_row_'+i;
-    var sevClass = STOP_SEV[i]==='Major'?'sev-major':STOP_SEV[i]==='Minor'?'sev-minor':'sev-na';
-    var sevLbl = STOP_SEV[i]||'NA';
+    // PM 2026-08-05: effective severity — 'Info' items render with the neutral
+    // sev-na styling so they read as advisory rather than as a pass/fail gate.
+    var sevEff = getStopSev(i);
+    var sevClass = sevEff==='Major'?'sev-major':sevEff==='Minor'?'sev-minor':'sev-na';
+    var sevLbl = sevEff||'NA';
     tr.innerHTML =
       '<td class="num">'+displayNum+'</td>'+
       '<td><span data-en="'+cond.replace(/"/g,'&quot;')+'" data-type="stop" data-idx="'+i+'">'+cond+'</span><span class="sev-badge '+sevClass+'">'+sevLbl+'</span></td>'+
@@ -2478,11 +2503,16 @@ function onStopChange(radio, i) {
   row.style.background = '';
   if (isNok) {
     row.classList.add('nok-active');
-    var slbl = STOP_LABELS[i] || ('Stop Item '+(i+1));
-    var sev = STOP_SEV[i] ? ' ['+STOP_SEV[i]+']' : '';
+    // PM 2026-08-05: report the effective severity, and the number the technician
+    // sees. This used to print the raw array index+1, which is off by one for every
+    // item after the one removed on Aramco Digital.
+    var dnum = getStopDisplayNum(i) || String(i+1);
+    var slbl = STOP_LABELS[i] || ('Stop Item '+dnum);
+    var sevE = getStopSev(i);
+    var sev = sevE ? ' ['+sevE+']' : '';
     var noteVal = inp ? inp.value.trim() : '';
-    appendToRemarks('Pre-condition #'+(i+1)+' \u2014 '+slbl+sev+': '+(noteVal||'pending comment'));
-    if (inp) { inp.oninput = function(){ syncNokToRemarks('stop_note_'+i, i+1, slbl+sev); }; }
+    appendToRemarks('Pre-condition #'+dnum+' \u2014 '+slbl+sev+': '+(noteVal||'pending comment'));
+    if (inp) { inp.oninput = function(){ syncNokToRemarks('stop_note_'+i, dnum, slbl+sev); }; }
   } else {
     if (inp) { inp.oninput = null; }
     removeFromRemarks('Pre-condition #'+(i+1));
@@ -2663,8 +2693,12 @@ function computeOutcome() {
     var sok  = document.querySelector('input[name="stop_'+j+'"][value="ok"]');
     if ((snok && snok.checked) || (sok && sok.checked)) totalAnswered++;
     if (snok && snok.checked) {
-      if (STOP_SEV[j] === 'Major') majorNok++;
-      else if (STOP_SEV[j] !== 'NA') minorNok++;
+      // PM 2026-08-05: advisory severities ('NA', and 'Info' on Aramco Digital)
+      // are excluded from both counters, so they cannot drive the verdict —
+      // which is decided purely by majorNok (rejected) / minorNok (conditional).
+      var sevEffJ = getStopSev(j);
+      if (sevEffJ === 'Major') majorNok++;
+      else if (!isAdvisorySev(sevEffJ)) minorNok++;
     }
   }
   // Virtual non-conformances from remarks textarea
