@@ -875,7 +875,11 @@
              (Rectifier Cabinet inside a non-approved telecom ODU) from the
              checklist and renumbers everything after it. -->
         <div class="hf"><label>Project Name</label><select id="h_project" onchange="onProjectChange();scheduleAutoSave()"><option value="" selected>Select Project</option><option value="CAPEX">CAPEX</option><option value="Colocation">Colocation</option><option value="B2S">B2S</option><option value="Mission Critical">Mission Critical</option><option value="Aramco Digital">Aramco Digital</option><option value="Other">Other</option></select></div>
+        <!-- PM 2026-08-26: Customer drives the item #31 (N+1) charging term:
+             Zain -> 2h floor, Aramco Digital (customer AND project) -> 12h floor. -->
+        <div class="hf"><label>Customer</label><select id="h_customer" onchange="onCustomerChange();scheduleAutoSave()"><option value="" selected>Select Customer</option><option value="stc">stc</option><option value="Zain">Zain</option><option value="Mobily">Mobily</option><option value="Salam">Salam</option><option value="Aramco Digital">Aramco Digital</option><option value="Other">Other</option></select></div>
         <div class="hf" id="hf_project_other" style="display:none"><label>Project Name — please specify</label><input id="h_project_other" placeholder="Enter project name" oninput="scheduleAutoSave()"></div>
+        <div class="hf" id="hf_customer_other" style="display:none"><label>Customer — please specify</label><input id="h_customer_other" placeholder="Enter customer name" oninput="scheduleAutoSave()"></div>
       </div>
     </div>
   </div>
@@ -1559,6 +1563,25 @@ function getProjectName() {
 }
 function isAramcoProject() { return getProjectName() === 'Aramco Digital'; }
 
+// PM 2026-08-26: Customer — independent of Project Name.
+function getCustomerName() {
+  var el = document.getElementById('h_customer');
+  return el ? el.value : '';
+}
+function isZainCustomer()   { return getCustomerName() === 'Zain'; }
+function isAramcoCustomer() { return getCustomerName() === 'Aramco Digital'; }
+
+// Which item #31 (N+1) charging-term variant applies.
+//   'aramco'   — Customer AND Project both "Aramco Digital" -> 12h floor
+//   'zain'     — Customer "Zain"                            ->  2h floor
+//   'standard' — everything else                            ->  4h floor
+// The Aramco rule deliberately requires BOTH fields, per spec.
+function getN1Variant() {
+  if (isAramcoCustomer() && isAramcoProject()) return 'aramco';
+  if (isZainCustomer()) return 'zain';
+  return 'standard';
+}
+
 // Stop-condition array indices actually rendered, in display order.
 function getStopDisplayOrder() {
   var order = [];
@@ -1597,6 +1620,16 @@ function onProjectChange() {
   var other = document.getElementById('hf_project_other');
   if (other) other.style.display = (getProjectName() === 'Other') ? '' : 'none';
   refreshConditionalChecklist();
+  // Project participates in the Aramco N+1 variant, so recompute item #31.
+  try { if (typeof autoCalcN1 === 'function') autoCalcN1(); } catch (e) {}
+}
+
+// PM 2026-08-26: Customer drives the item #31 (N+1) charging term.
+function onCustomerChange() {
+  var other = document.getElementById('hf_customer_other');
+  if (other) other.style.display = (getCustomerName() === 'Other') ? '' : 'none';
+  try { if (typeof autoCalcN1 === 'function') autoCalcN1(); } catch (e) {}
+  try { if (typeof updateProgress === 'function') updateProgress(); } catch (e) {}
 }
 
 // Re-render both tables, preserving answers and comments across the rebuild.
@@ -3208,7 +3241,7 @@ var _store = {
 
 function collectFormData() {
   var data = { ts: Date.now(), fields: {} };
-  ['h_siteid','h_sitename','h_wo','h_date','h_tech','h_contractor','h_region','h_district','h_scope','h_project','h_project_other','stop_sig','stop_date',
+  ['h_siteid','h_sitename','h_wo','h_date','h_tech','h_contractor','h_region','h_district','h_scope','h_project','h_project_other','h_customer','h_customer_other','stop_sig','stop_date',
    'site_power_config','site_ll_voltage','site_mdb_cb',
    'shelter_type','bb_fuses_count','bb_fuses_utilized','rect_loading_pct',
    'ac_v_l1n','ac_v_l2n','ac_v_l3n','ac_v_l1l2','ac_v_l2l3','ac_v_l3l1',
@@ -3324,6 +3357,7 @@ function loadProgress() {
     // Name. Runs after the saved answers are back in the DOM — the refresh
     // snapshots and re-applies them across the re-render.
     if (typeof onProjectChange === 'function') onProjectChange();
+    if (typeof onCustomerChange === 'function') onCustomerChange();
     onShelterTypeChange();
     validateBbFuses();
     validateBbFusesUtilized();
@@ -4662,8 +4696,30 @@ function autoCalcN1() {
   }, 0);
 
   var dcLoadW54 = siteLoadA * 1.1 * 54;
-  var techChargingW = (10 * liIonStrings + 0.10 * vrlaTotalAH) * 54;
-  var floorChargingW = 0.1 * 4 * siteLoadA * 1.1 * 54;
+
+  // PM 2026-08-26: customer-specific charging term for item #31.
+  //   standard  -> Max( (10×#LiIon + 0.10×ΣVRLA_AH)×54 , 0.1× 4×Load×1.1×54 )
+  //   Zain      -> Max( 0.10×Σ ALL string AH ×54       , 0.1× 2×Load×1.1×54 )
+  //   Aramco    -> Max( 0.10×Σ ALL string AH ×54       , 0.1×12×Load×1.1×54 )
+  // NOTE: the Zain/Aramco first term is a FLAT 10% of every string's AH, as
+  // specified. It intentionally bypasses the PM 2026-05-11 technology split
+  // (Li-Ion fixed 10 A per string) which still governs the standard variant.
+  var n1Variant = getN1Variant();
+  var totalAllAH = battStrings.reduce(function(sum, bs){
+    return sum + (parseFloat(bs.ah) || 0);
+  }, 0);
+
+  var techChargingW, floorHours, chargingLabel;
+  if (n1Variant === 'standard') {
+    floorHours    = 4;
+    techChargingW = (10 * liIonStrings + 0.10 * vrlaTotalAH) * 54;
+    chargingLabel = 'tech=(10×' + liIonStrings + '+0.10×' + vrlaTotalAH + ')×54';
+  } else {
+    floorHours    = (n1Variant === 'aramco') ? 12 : 2;
+    techChargingW = 0.10 * totalAllAH * 54;
+    chargingLabel = '0.1×ΣAH(' + totalAllAH + ')×54';
+  }
+  var floorChargingW = 0.1 * floorHours * siteLoadA * 1.1 * 54;
   var chargingW = Math.max(techChargingW, floorChargingW);
   var totalLoad = dcLoadW54 + acLoad + chargingW;
 
@@ -4684,8 +4740,9 @@ function autoCalcN1() {
   var detail = '<b>Step 1:</b> '
     + siteLoadA + 'A×1.1×54 = ' + Math.round(dcLoadW54) + 'W'
     + ' + (' + acCount + '×' + acPerUnit + 'W×0.3 = ' + acLoad.toFixed(0) + 'W)'
-    + ' + max(tech=(10×' + liIonStrings + '+0.10×' + vrlaTotalAH + ')×54 = ' + Math.round(techChargingW) + 'W,'
-    + ' floor=0.1×4×' + siteLoadA + '×1.1×54 = ' + Math.round(floorChargingW) + 'W)'
+    + ' + max(' + chargingLabel + ' = ' + Math.round(techChargingW) + 'W,'
+    + ' floor=0.1×' + floorHours + '×' + siteLoadA + '×1.1×54 = ' + Math.round(floorChargingW) + 'W)'
+    + (n1Variant !== 'standard' ? ' <i>[' + (n1Variant === 'aramco' ? 'Aramco Digital' : 'Zain') + ' rule]</i>' : '')
     + ' = ' + Math.round(totalLoad) + 'W'
     + ' | <b>Step 2:</b> ' + Math.round(totalLoad) + 'W ÷ ' + moduleCap + 'W = ' + stepN.toFixed(2)
     + ' | <b>Step 3:</b> frac ' + frac.toFixed(2) + (frac > 0.2 ? ' > 0.2 → ⌈' + stepN.toFixed(2) + '⌉' : ' ≤ 0.2 → ⌊' + stepN.toFixed(2) + '⌋') + ' = ' + nRounded
